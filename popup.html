@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <style>
     body {
-      width: 320px;
+      width: 360px;
       padding: 16px;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       font-size: 13px;
@@ -22,7 +22,7 @@
       color: #9aa0a6;
       font-size: 12px;
     }
-    input, select {
+    input, select, textarea {
       width: 100%;
       padding: 8px;
       margin-bottom: 12px;
@@ -32,8 +32,13 @@
       color: #e8eaed;
       font-size: 13px;
       box-sizing: border-box;
+      font-family: inherit;
     }
-    input:focus, select:focus {
+    textarea {
+      resize: vertical;
+      min-height: 48px;
+    }
+    input:focus, select:focus, textarea:focus {
       outline: none;
       border-color: #8ab4f8;
     }
@@ -58,6 +63,16 @@
     }
     .status.ok { display: block; background: #1e3a2f; color: #81c995; }
     .status.err { display: block; background: #3c1f1e; color: #f28b82; }
+    .section {
+      border-top: 1px solid #5f6368;
+      margin-top: 12px;
+      padding-top: 12px;
+    }
+    .hint {
+      color: #9aa0a6;
+      font-size: 11px;
+      margin: -8px 0 12px;
+    }
   </style>
 </head>
 <body>
@@ -74,7 +89,18 @@
     <option value="meta-llama/llama-3.1-8b-instruct">Llama 3.1 8B</option>
   </select>
 
+  <div class="section">
+    <label>О себе</label>
+    <textarea id="userContext" rows="3" placeholder="Например: Я фронтенд-разработчик, 3 года опыта в React. Работаю в компании X."></textarea>
+    <div class="hint">Кто ты, чем занимаешься — контекст для подсказок</div>
+
+    <label>Цель звонка</label>
+    <textarea id="callGoal" rows="3" placeholder="Например: Собеседование на позицию Senior Frontend. Хочу показать опыт с React и TypeScript."></textarea>
+    <div class="hint">Чего хочешь добиться — AI будет подсказывать что ответить</div>
+  </div>
+
   <button id="save">Сохранить</button>
+  <button id="clearHistory" style="margin-top:8px; background:#5f6368;">Очистить историю диалога</button>
   <div class="status" id="status"></div>
 
   <script src="popup.js"></script>

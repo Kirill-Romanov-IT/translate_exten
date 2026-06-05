@@ -12,25 +12,26 @@
   const TEXT_SELECTOR = ".ygicle";
 
   const POLL_MS = 200;
-  // Пауза в речи — если текст не менялся 3 сек, считаем фразу законченной
   const PAUSE_MS = 3000;
-  // Макс. накопление — если человек говорит без пауз дольше 12 сек, переводим то что есть
   const MAX_ACCUMULATE_MS = 12000;
-  // Быстрый триггер — конец предложения (. ? !) + 800мс тишины
   const SENTENCE_END_MS = 800;
-  // Время жизни строки перевода в оверлее
   const TRANSLATION_DISPLAY_MS = 8000;
+  const SUGGEST_DISPLAY_MS = 12000;
+  const MAX_HISTORY = 50;
+  const HISTORY_SAVE_KEY = "mct_history";
 
-  // speaker → {text, pauseTimer, maxTimer, startedAt, translatedUpTo, translated}
   const activeSpeakers = new Map();
   const translatedTexts = new Set();
   const MAX_TRANSLATED = 50;
+
+  // История разговора для контекста — загружается из storage при старте
+  let conversationHistory = [];
 
   let noSubtitlesWarningShown = false;
   let noSubtitlesTimer = null;
   let debounceTimer = null;
 
-  // === Оверлей для стриминга субтитров ===
+  // === Оверлей ===
 
   const overlay = document.createElement("div");
   overlay.id = "mct-overlay";
@@ -63,26 +64,55 @@
         max-width: 80vw;
         transition: opacity 0.3s;
       }
-      .mct-line .mct-speaker {
+      .mct-line .mct-speaker { color: #8ab4f8; font-weight: 500; }
+      .mct-line .mct-translation { color: #81c995; display: block; margin-top: 2px; }
+      .mct-suggest {
+        background: rgba(30, 30, 80, 0.92);
+        border: 1px solid #bb86fc;
+        color: #fff;
+        font-family: "Google Sans", "Segoe UI", sans-serif;
+        font-size: 14px;
+        line-height: 1.4;
+        padding: 8px 16px;
+        border-radius: 8px;
+        max-width: 80vw;
+        text-align: left;
+        transition: opacity 0.4s;
+      }
+      .mct-suggest .mct-suggest-label {
+        color: #bb86fc;
+        font-weight: 600;
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        margin-bottom: 4px;
+      }
+      .mct-suggest .mct-suggest-text { color: #e8eaed; }
+      .mct-suggest .mct-suggest-en {
         color: #8ab4f8;
+        font-size: 14px;
+        margin-top: 4px;
         font-weight: 500;
       }
-      .mct-line .mct-translation {
-        color: #81c995;
-        display: block;
-        margin-top: 2px;
+      .mct-suggest .mct-suggest-why {
+        color: #9aa0a6;
+        font-size: 12px;
+        margin-top: 4px;
+        font-style: italic;
       }
     </style>
   `;
   document.body.appendChild(overlay);
 
   const overlayLines = new Map();
+  let suggestEl = null;
+  let suggestHideTimer = null;
 
   function getOverlayLine(speaker) {
     if (overlayLines.has(speaker)) return overlayLines.get(speaker);
     const el = document.createElement("div");
     el.className = "mct-line";
-    overlay.appendChild(el);
+    overlay.insertBefore(el, suggestEl);
     overlayLines.set(speaker, el);
     return el;
   }
@@ -105,6 +135,33 @@
     el.dataset.hideTimer = String(timer);
   }
 
+  function showSuggestion(textRu, textEn, why) {
+    if (!suggestEl) {
+      suggestEl = document.createElement("div");
+      suggestEl.className = "mct-suggest";
+      overlay.appendChild(suggestEl);
+    }
+
+    let html = `<div class="mct-suggest-label">💡 Подсказка</div>`;
+    if (textRu) {
+      html += `<div class="mct-suggest-text">${esc(textRu)}</div>`;
+    }
+    if (textEn) {
+      html += `<div class="mct-suggest-en">🇬🇧 ${esc(textEn)}</div>`;
+    }
+    if (why) {
+      html += `<div class="mct-suggest-why">${esc(why)}</div>`;
+    }
+
+    suggestEl.innerHTML = html;
+    suggestEl.style.opacity = "1";
+
+    if (suggestHideTimer) clearTimeout(suggestHideTimer);
+    suggestHideTimer = setTimeout(() => {
+      if (suggestEl) suggestEl.style.opacity = "0";
+    }, SUGGEST_DISPLAY_MS);
+  }
+
   function removeOverlayLine(speaker) {
     const el = overlayLines.get(speaker);
     if (!el) return;
@@ -120,6 +177,45 @@
     d.textContent = s;
     return d.innerHTML;
   }
+
+  // === История разговора (персистентная) ===
+
+  function loadHistory() {
+    chrome.storage.local.get([HISTORY_SAVE_KEY], (data) => {
+      if (data[HISTORY_SAVE_KEY]) {
+        conversationHistory = data[HISTORY_SAVE_KEY];
+        console.log(
+          `[Meet Captions] Загружена история: ${conversationHistory.length} фраз`
+        );
+      }
+    });
+  }
+
+  function saveHistory() {
+    chrome.storage.local.set({ [HISTORY_SAVE_KEY]: conversationHistory });
+  }
+
+  function addToHistory(speaker, text, translation) {
+    conversationHistory.push({
+      speaker,
+      text,
+      translation,
+      ts: Date.now(),
+    });
+    if (conversationHistory.length > MAX_HISTORY) {
+      conversationHistory.shift();
+    }
+    saveHistory();
+  }
+
+  function buildHistoryString() {
+    if (conversationHistory.length === 0) return "";
+    return conversationHistory
+      .map((h) => `${h.speaker}: ${h.text}`)
+      .join("\n");
+  }
+
+  loadHistory();
 
   // === Логика ===
 
@@ -172,9 +268,10 @@
     rememberTranslated(key);
 
     const prefix = speaker || "???";
+    const history = buildHistoryString();
 
     chrome.runtime.sendMessage(
-      { type: "translate", text: text },
+      { type: "translate", text, history },
       (response) => {
         if (chrome.runtime.lastError) {
           console.error(
@@ -195,6 +292,32 @@
               `[>>] ${prefix}: ${response.translation}`
           );
           showTranslation(speaker, text, response.translation);
+          addToHistory(speaker, text, response.translation);
+
+          if (response.suggestionRu || response.suggestionEn) {
+            let logMsg = "";
+            if (response.suggestionRu)
+              logMsg += `%c[💡 RU] ${response.suggestionRu}\n`;
+            if (response.suggestionEn)
+              logMsg += `%c[🇬🇧 EN] ${response.suggestionEn}\n`;
+            if (response.why)
+              logMsg += `%c    ↳ ${response.why}`;
+
+            const styles = [];
+            if (response.suggestionRu)
+              styles.push("color: #bb86fc; font-weight: bold;");
+            if (response.suggestionEn)
+              styles.push("color: #8ab4f8; font-weight: bold;");
+            if (response.why)
+              styles.push("color: #9aa0a6; font-style: italic;");
+
+            console.log(logMsg, ...styles);
+            showSuggestion(
+              response.suggestionRu,
+              response.suggestionEn,
+              response.why
+            );
+          }
         }
       }
     );
@@ -214,7 +337,6 @@
     }
   }
 
-  // Частичный перевод — переводим накопленное, но спикер продолжает говорить
   function partialFlush(speaker) {
     const state = activeSpeakers.get(speaker);
     if (!state || state.translated) return;
@@ -223,19 +345,15 @@
     state.translatedUpTo = state.text;
     requestTranslation(speaker, state.text);
 
-    // Сбрасываем для следующего куска — maxTimer перезапустится при следующем обновлении
     if (state.maxTimer) clearTimeout(state.maxTimer);
   }
 
   function scheduleTranslation(speaker, state) {
     if (state.pauseTimer) clearTimeout(state.pauseTimer);
 
-    // Выбираем задержку: конец предложения → быстрый триггер, иначе ждём паузу
     const delay = endsWithPunctuation(state.text) ? SENTENCE_END_MS : PAUSE_MS;
-
     state.pauseTimer = setTimeout(() => flushSpeaker(speaker), delay);
 
-    // Макс. таймер — если ещё не запущен, стартуем
     if (!state.maxTimer) {
       state.maxTimer = setTimeout(() => partialFlush(speaker), MAX_ACCUMULATE_MS);
     }
@@ -259,14 +377,11 @@
 
         if (existing && existing.text === text) continue;
 
-        // Стрим оригинала — обновляем ту же строку в оверлее
         updateOverlayLine(speaker, text);
 
         if (existing) {
           if (existing.pauseTimer) clearTimeout(existing.pauseTimer);
 
-          // Текст обновился после того как мы уже перевели предыдущий кусок —
-          // значит это продолжение, разрешаем новый перевод
           if (existing.translated && existing.translatedUpTo !== text) {
             existing.translated = false;
             if (existing.maxTimer) clearTimeout(existing.maxTimer);
@@ -289,7 +404,6 @@
         }
       }
 
-      // Спикеры пропавшие из DOM — фраза закончена
       for (const [speaker] of activeSpeakers) {
         if (!currentSpeakers.has(speaker)) {
           flushSpeaker(speaker);
